@@ -14,5 +14,5 @@ app.appendChild(button);
 button.innerHTML = "Click me";
 
 button.onclick = () => {
-  alert("The button has been clicked");
+  alert("The button has been clicked.");
 };
