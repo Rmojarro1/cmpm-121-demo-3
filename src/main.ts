@@ -4,7 +4,6 @@ const app: HTMLDivElement = document.querySelector("#app")!;
 const gameName = "Raul's D3";
 
 document.title = gameName;
-//document.body.style.backgroundColor = "purple";
 
 const header = document.createElement("h1");
 header.innerHTML = gameName;
