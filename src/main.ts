@@ -5,7 +5,6 @@ import "./leafletWorkaround.ts";
 import luck from "./luck.ts";
 
 const gameName = "Raul's D3";
-
 document.title = gameName;
 
 const header = document.createElement("h1");
@@ -17,7 +16,51 @@ const TILE_DEGREES = 0.001;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.5;
 
+// Player inventory, initially empty
+const playerInventory: string[] = [];
+
 const hotspots: Array<{ position: leaflet.LatLng; items: string[] }> = [];
+
+function updatePopupContent(hotspotIndex: number): string {
+  const hotspot = hotspots[hotspotIndex];
+  let content = "<b>Hotspot</b><br>Items: <ul>";
+
+  hotspot.items.forEach((item: string, index: number) => {
+    content +=
+      `<li>${item} <button id="collect-${hotspotIndex}-${index}">Collect</button></li>`;
+  });
+
+  content += "</ul>";
+
+  if (playerInventory.length > 0) {
+    content += '<br>Select item to deposit: <select id="depositSelect">';
+    playerInventory.forEach((item, index) => {
+      content += `<option value="${index}">${item}</option>`;
+    });
+    content += "</select> ";
+    content += `<button id="deposit-${hotspotIndex}">Deposit Item</button>`;
+  } else {
+    content += "<br>Your inventory is empty!";
+  }
+
+  return content;
+}
+
+function depositItem(hotspotIndex: number): void {
+  const selectElement = document.getElementById(
+    "depositSelect",
+  ) as HTMLSelectElement;
+  if (selectElement) {
+    const selectedIndex = selectElement.selectedIndex;
+    const selectedItem = playerInventory[selectedIndex];
+
+    playerInventory.splice(selectedIndex, 1);
+    hotspots[hotspotIndex].items.push(selectedItem);
+
+    console.log(`Deposited ${selectedItem} into hotspot.`);
+    console.log(`Updated Player Inventory: ${playerInventory.join(", ")}`);
+  }
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   const mapElement = document.getElementById("map");
@@ -43,15 +86,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   for (let y = -NEIGHBORHOOD_SIZE; y <= NEIGHBORHOOD_SIZE; y++) {
     for (let x = -NEIGHBORHOOD_SIZE; x <= NEIGHBORHOOD_SIZE; x++) {
-      const position = leaflet.latLng(
-        OAKES_CLASSROOM.lat + y * TILE_DEGREES,
-        OAKES_CLASSROOM.lng + x * TILE_DEGREES,
-      );
-      const chance = luck(`hotspot-${position.lat}-${position.lng}`);
+      const randomOffsetLat = (Math.random() - 0.5) * TILE_DEGREES;
+      const randomOffsetLng = (Math.random() - 0.5) * TILE_DEGREES;
 
-      console.log(
-        `Chance for hotspot at (${position.lat}, ${position.lng}): ${chance}`,
+      const position = leaflet.latLng(
+        OAKES_CLASSROOM.lat + y * TILE_DEGREES + randomOffsetLat,
+        OAKES_CLASSROOM.lng + x * TILE_DEGREES + randomOffsetLng,
       );
+
+      const chance = luck(`hotspot-${position.lat}-${position.lng}`);
 
       if (chance < CACHE_SPAWN_PROBABILITY) {
         const newHotspot = {
@@ -62,44 +105,42 @@ document.addEventListener("DOMContentLoaded", () => {
         hotspots.push(newHotspot);
 
         const marker = leaflet.marker(newHotspot.position).addTo(map);
-        marker.bindPopup(
-          `<b>Hotspot</b><br>Items: ${newHotspot.items.join(", ")}`,
-        );
+        const hotspotIndex = hotspots.length - 1;
+
+        marker.on("popupopen", function () {
+          marker.getPopup()?.setContent(updatePopupContent(hotspotIndex));
+
+          const hotspot = hotspots[hotspotIndex];
+
+          hotspot.items.forEach((_item, index: number) => {
+            const collectButton = document.getElementById(
+              `collect-${hotspotIndex}-${index}`,
+            );
+            if (collectButton) {
+              collectButton.addEventListener("click", function () {
+                const itemToCollect = hotspot.items[index];
+                playerInventory.push(itemToCollect);
+                hotspot.items.splice(index, 1);
+                marker.getPopup()?.setContent(updatePopupContent(hotspotIndex));
+                console.log(`Collected: ${itemToCollect}`);
+                console.log(`Player Inventory: ${playerInventory.join(", ")}`);
+              });
+            }
+          });
+
+          const depositButton = document.getElementById(
+            `deposit-${hotspotIndex}`,
+          );
+          if (depositButton) {
+            depositButton.addEventListener("click", function () {
+              depositItem(hotspotIndex);
+              marker.getPopup()?.setContent(updatePopupContent(hotspotIndex));
+            });
+          }
+        });
+
+        marker.bindPopup(updatePopupContent(hotspotIndex));
       }
     }
   }
-
-  map.on("click", (e: leaflet.LeafletMouseEvent) => {
-    const { lat, lng } = e.latlng;
-    const randomValue = luck(`Click at ${lat},${lng}`);
-
-    console.log(
-      `Clicked at (${lat}, ${lng}) with random value: ${randomValue}`,
-    );
-
-    if (randomValue < 0.1) {
-      const newMarker = leaflet.marker([lat, lng]).addTo(map);
-      newMarker.bindPopup(`Newly added hotspot! Random value: ${randomValue}`)
-        .openPopup();
-    }
-  });
 });
-
-/*const moveKeyContainer = document.createElement("div");
-app.appendChild(moveKeyContainer);
-const leftMoveButton = document.createElement("button");
-leftMoveButton.innerHTML = "⬅️";
-moveKeyContainer.appendChild(leftMoveButton);
-const rightMoveButton = document.createElement("button");
-rightMoveButton.innerHTML = "➡️";
-moveKeyContainer.appendChild(rightMoveButton);
-const upMoveButton = document.createElement("button");
-upMoveButton.innerHTML = "⬆️";
-moveKeyContainer.appendChild(upMoveButton);
-const downMoveButton = document.createElement("button");
-downMoveButton.innerHTML = "⬇️";
-moveKeyContainer.appendChild(downMoveButton);
-
-leftMoveButton.addEventListener("click", () => {
-  alert("left");
-}); */
