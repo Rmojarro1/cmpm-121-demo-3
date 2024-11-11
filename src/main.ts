@@ -1,247 +1,390 @@
-import leaflet from "leaflet";
+// @deno-types="npm:@types/leaflet@^1.9.14"
+import leaflet, { LatLng } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 import "./leafletWorkaround.ts";
+
 import luck from "./luck.ts";
 
-// Define Interfaces
+class CellFactory {
+  private static cellCache: Map<string, Cell> = new Map();
+
+  static getCellFromLatLng(lat: number, lng: number): Cell {
+    const i = Math.floor((lat - 0) / TILE_DEGREES);
+    const j = Math.floor((lng - 0) / TILE_DEGREES);
+    return this.getCell(i, j);
+  }
+
+  static getCell(i: number, j: number): Cell {
+    const key = `${i},${j}`;
+    if (!this.cellCache.has(key)) {
+      this.cellCache.set(key, { i, j });
+    }
+    return this.cellCache.get(key)!;
+  }
+}
+
+interface ControlButton {
+  name: string;
+  text: string;
+}
+
 interface Cell {
   i: number;
   j: number;
 }
 
+interface Memento<T> {
+  toMemento(): T;
+  fromMemento(memento: T): void;
+}
+
+class Cache implements Memento<string> {
+  coins: Coin[] = [];
+  position: Cell;
+  bounds: leaflet.LatLngBounds;
+
+  constructor(position: Cell, bounds: leaflet.LatLngBounds) {
+    this.position = position;
+    this.bounds = bounds;
+  }
+
+  positionToString(): string {
+    return `${this.position.i},${this.position.j}`;
+  }
+
+  toMemento(): string {
+    const mementoData = {
+      coins: this.coins.map((coin) => ({
+        cell: coin.cell,
+        serial: coin.serial,
+      })),
+      position: this.position,
+    };
+    return JSON.stringify(mementoData);
+  }
+
+  fromMemento(memento: string): void {
+    const mementoData = JSON.parse(memento);
+    this.position = mementoData.position;
+    this.coins = mementoData.coins.map((
+      coinData: { cell: Cell; serial: number },
+    ) => ({
+      cell: coinData.cell,
+      serial: coinData.serial,
+      toString() {
+        return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+      },
+    }));
+  }
+}
+
 interface Coin {
-  id: string; // Based on Cell coordinates and a serial number
   cell: Cell;
   serial: number;
+  toString(): string;
 }
 
-interface Cache {
-  coins: Coin[];
-}
+const app: HTMLDivElement = document.querySelector("#app")!;
 
-// Game Configuration
-const gameName = "Raul's D3";
-document.title = gameName;
+const controlButtons: ControlButton[] = [
+  { name: "sensor", text: "🌐" },
+  { name: "north", text: "⬆️" },
+  { name: "south", text: "⬇️" },
+  { name: "west", text: "⬅️" },
+  { name: "east", text: "➡️" },
+  { name: "reset", text: "🚮" },
+];
+addControlButtons(controlButtons);
 
-// Constants for grid calculation
-const TILE_DEGREES = 0.0001; // Width of grid cells in degrees
-const NEIGHBORHOOD_SIZE = 8; // Cells to encompass around player
-const CACHE_SPAWN_PROBABILITY = 0.1; // 10% of grid cells
+const statusPanel: HTMLDivElement = document.createElement("div");
+statusPanel.id = "statusPanel";
+app.appendChild(statusPanel);
 
-// Null Island coordinates
-const _NULL_ISLAND = { lat: 0, lng: 0 };
+const mapElement: HTMLDivElement = document.createElement("div");
+mapElement.id = "map";
+app.appendChild(mapElement);
 
-// Player's Initial Location at Oakes College
-const PLAYER_START = leaflet.latLng(36.9895, -122.063);
+const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
 
-// Player Inventory
-const playerInventory: Coin[] = [];
+const GAMEPLAY_ZOOM_LEVEL = 19;
+const TILE_DEGREES = 1e-4;
+const NEIGHBORHOOD_SIZE = 8;
+const CACHE_SPAWN_PROBABILITY = 0.1;
 
-// Caches on the map
-const caches: Cache[] = [];
+const map = leaflet.map(document.getElementById("map")!, {
+  center: OAKES_CLASSROOM,
+  zoom: GAMEPLAY_ZOOM_LEVEL,
+  minZoom: GAMEPLAY_ZOOM_LEVEL,
+  maxZoom: GAMEPLAY_ZOOM_LEVEL,
+  zoomControl: false,
+  scrollWheelZoom: false,
+});
 
-// Flyweight Pattern for managing Cells
-const locationFlyweight: { [key: string]: Cell } = {};
+leaflet.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution:
+    '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
 
-function getCell(i: number, j: number): Cell {
-  const key = `${i}_${j}`;
-  if (!locationFlyweight[key]) {
-    locationFlyweight[key] = { i, j };
-  }
-  return locationFlyweight[key];
-}
+const redIcon = leaflet.divIcon({
+  className: "custom-div-icon",
+  html:
+    "<div style='background-color:red;width:10px;height:10px;border-radius:50%;'></div>",
+  iconSize: [10, 10],
+});
 
-// Calculate global grid indices
-function latLngToCell(lat: number, lng: number): Cell {
-  const i = Math.round(lat / TILE_DEGREES);
-  const j = Math.round(lng / TILE_DEGREES);
-  return getCell(i, j);
-}
+const playerMarker = leaflet.marker(OAKES_CLASSROOM, { icon: redIcon });
+playerMarker.bindTooltip("You");
+playerMarker.addTo(map);
 
-// Generate a unique id for the coin
-function generateCoinId(cell: Cell, serial: number): string {
-  return `${cell.i}-${cell.j}-${serial}`;
-}
+const playerCoins: Coin[] = [];
+statusPanel.innerHTML = "No coins yet...";
 
-// Create a coin with a serial number starting at 1
-function createCoin(cell: Cell, serial: number): Coin {
-  return {
-    id: generateCoinId(cell, serial),
-    cell,
-    serial,
-  };
-}
+const cacheMementos: Map<string, string> = new Map();
+spawnNearbyCaches(OAKES_CLASSROOM);
 
-// Cache functions
-function createCache(cell: Cell): Cache {
-  return {
-    coins: [
-      createCoin(cell, 1),
-      createCoin(cell, 2),
-    ],
-  };
-}
-
-// Represent coin's identity as a user-readable string
-function formatCoinIdentity(coin: Coin): string {
-  return `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
-}
-
-function updatePopupContent(cache: Cache, cell: Cell): string {
-  let content = `<b>cache [${cell.i}, ${cell.j}]</b><br>Items: <ul>`;
-
-  cache.coins.forEach((coin) => {
-    content += `<li>${
-      formatCoinIdentity(coin)
-    } <button id="collect-${coin.id}">Collect</button></li>`;
-  });
-
-  content += "</ul>";
-
-  if (playerInventory.length > 0) {
-    content += '<br>Select item to deposit: <select id="depositSelect">';
-    playerInventory.forEach((item, index) => {
-      content += `<option value="${index}">${
-        formatCoinIdentity(item)
-      }</option>`;
-    });
-    content += "</select> ";
-    content += `<button id="deposit">Deposit Item</button>`;
-  } else {
-    content += "<br>Your inventory is empty!";
-  }
-
-  return content;
-}
-
-// Collect a coin from a cache
-function collect(coinId: string, cacheIndex: number) {
-  const cache = caches[cacheIndex];
-  const coinIndex = cache.coins.findIndex((coin) => coin.id === coinId);
-
-  if (coinIndex > -1) {
-    const [coin] = cache.coins.splice(coinIndex, 1);
-    playerInventory.push(coin);
-    console.log(`Collected: ${formatCoinIdentity(coin)}`);
-
-    // Dispatch events
-    globalThis.dispatchEvent(new CustomEvent("player-inventory-changed"));
-    globalThis.dispatchEvent(
-      new CustomEvent("cache-updated", { detail: { cacheIndex } }),
-    );
-  }
-}
-
-// Deposit a coin into a cache
-function deposit(coinIndex: number, cacheIndex: number) {
-  const cache = caches[cacheIndex];
-  const [coin] = playerInventory.splice(coinIndex, 1);
-
-  cache.coins.push(coin);
-  console.log(`Deposited: ${formatCoinIdentity(coin)}`);
-
-  // Dispatch events
-  globalThis.dispatchEvent(new CustomEvent("player-inventory-changed"));
-  globalThis.dispatchEvent(
-    new CustomEvent("cache-updated", { detail: { cacheIndex } }),
+function movePlayer(direction: Int16Array) {
+  const currentPos: leaflet.LatLng = playerMarker.getLatLng();
+  const newPos: LatLng = leaflet.latLng(
+    currentPos.lat + TILE_DEGREES * direction[0],
+    currentPos.lng + TILE_DEGREES * direction[1],
   );
+  playerMarker.setLatLng(newPos);
+
+  clearCaches();
+  spawnNearbyCaches(newPos);
 }
 
-// Setup map and events
-document.addEventListener("DOMContentLoaded", () => {
-  const mapElement = document.getElementById("map");
-  if (!mapElement) {
-    console.error("Map element not found!");
-    return;
-  }
+function clearCaches() {
+  map.eachLayer((layer) => {
+    if (layer instanceof leaflet.Marker) {
+      const markerLayer = layer as leaflet.Marker & { cache?: Cache };
+      if (markerLayer.cache) {
+        const cache = markerLayer.cache;
+        cacheMementos.set(cache.positionToString(), cache.toMemento());
+        map.removeLayer(layer);
+      }
+    }
+  });
+}
 
-  const map = leaflet.map(mapElement, {
-    center: PLAYER_START,
-    zoom: 19,
-    minZoom: 19,
-    maxZoom: 19,
-    zoomControl: false,
-    dragging: true,
-    scrollWheelZoom: false,
+function collect(coin: Coin, cache: Cache): void {
+  const coinIndex = cache.coins.findIndex((c) => c.serial === coin.serial);
+  if (coinIndex >= 0) {
+    playerCoins.push(coin);
+    cache.coins.splice(coinIndex, 1);
+    cacheMementos.set(cache.positionToString(), cache.toMemento());
+    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+    console.log(`Collected coin: ${coin.toString()}`);
+  }
+}
+
+function deposit(coin: Coin, cache: Cache): void {
+  playerCoins.splice(playerCoins.indexOf(coin), 1);
+  cache.coins.push(coin);
+  cacheMementos.set(cache.positionToString(), cache.toMemento());
+  statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+  console.log(`Deposited coin: ${coin.toString()}`);
+}
+
+function addControlButtons(buttons: ControlButton[]) {
+  const controlPanel: HTMLDivElement = document.createElement("div");
+  controlPanel.id = "controlPanel";
+
+  buttons.forEach((button) => {
+    const btn = document.createElement("button");
+    btn.id = button.name;
+    btn.title = button.name;
+    btn.textContent = button.text;
+
+    let direction: Int16Array | null = null;
+    switch (button.name) {
+      case "north":
+        direction = new Int16Array([1, 0]);
+        break;
+      case "south":
+        direction = new Int16Array([-1, 0]);
+        break;
+      case "east":
+        direction = new Int16Array([0, 1]);
+        break;
+      case "west":
+        direction = new Int16Array([0, -1]);
+        break;
+    }
+
+    if (direction) {
+      btn.addEventListener("click", () => movePlayer(direction));
+    }
+
+    controlPanel.appendChild(btn);
   });
 
-  leaflet.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: "© OpenStreetMap contributors",
-  }).addTo(map);
+  app.appendChild(controlPanel);
+}
 
-  const playerCell = latLngToCell(PLAYER_START.lat, PLAYER_START.lng);
+function spawnNearbyCaches(center: leaflet.LatLng) {
+  const centerCell = CellFactory.getCellFromLatLng(center.lat, center.lng);
 
-  for (let y = -NEIGHBORHOOD_SIZE; y <= NEIGHBORHOOD_SIZE; y++) {
-    for (let x = -NEIGHBORHOOD_SIZE; x <= NEIGHBORHOOD_SIZE; x++) {
-      const currentCell = getCell(playerCell.i + x, playerCell.j + y);
-      const lat = currentCell.i * TILE_DEGREES;
-      const lng = currentCell.j * TILE_DEGREES;
+  for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
+    for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
+      const gridI = centerCell.i + i;
+      const gridJ = centerCell.j + j;
 
-      // Use the luck function for deterministic placement
-      const chance = luck(`cache-${currentCell.i}-${currentCell.j}`);
-
-      if (chance < CACHE_SPAWN_PROBABILITY) {
-        const newCache = createCache(currentCell);
-        caches.push(newCache);
-
-        const marker = leaflet.marker(leaflet.latLng(lat, lng)).addTo(map);
-        const cacheIndex = caches.length - 1;
-
-        marker.bindPopup(updatePopupContent(newCache, currentCell));
-
-        marker.on("popupopen", function () {
-          marker.getPopup()?.setContent(
-            updatePopupContent(newCache, currentCell),
-          );
-
-          newCache.coins.forEach((coin) => {
-            const collectButton = document.getElementById(`collect-${coin.id}`);
-            if (collectButton) {
-              collectButton.addEventListener("click", function () {
-                collect(coin.id, cacheIndex);
-                marker.getPopup()?.setContent(
-                  updatePopupContent(newCache, currentCell),
-                );
-              });
-            }
-          });
-
-          const depositButton = document.getElementById("deposit");
-          if (depositButton) {
-            depositButton.addEventListener("click", function () {
-              const selectElement = document.getElementById(
-                "depositSelect",
-              ) as HTMLSelectElement;
-              if (selectElement) {
-                deposit(selectElement.selectedIndex, cacheIndex);
-                marker.getPopup()?.setContent(
-                  updatePopupContent(newCache, currentCell),
-                );
-              }
-            });
-          }
-        });
+      if (luck([gridI, gridJ].toString()) < CACHE_SPAWN_PROBABILITY) {
+        spawnCache(gridI, gridJ);
       }
     }
   }
+}
 
-  // Event Listeners
-  globalThis.addEventListener("cache-updated", (event) => {
-    const customEvent = event as CustomEvent;
-    const { cacheIndex } = customEvent.detail;
-    console.log(`Cache at index ${cacheIndex} was updated.`);
-  });
+function spawnCache(i: number, j: number): Cache {
+  const cell = CellFactory.getCell(i, j);
+  const positionKey = `${i},${j}`;
+  const lat = i * TILE_DEGREES;
+  const lng = j * TILE_DEGREES;
+  const bounds = leaflet.latLngBounds([
+    [lat, lng],
+    [lat + TILE_DEGREES, lng + TILE_DEGREES],
+  ]);
 
-  globalThis.addEventListener("player-inventory-changed", () => {
+  const cacheMarker = leaflet.marker(bounds.getCenter());
+  cacheMarker.addTo(map);
+
+  const cache = new Cache(cell, bounds);
+
+  const memento = cacheMementos.get(positionKey);
+  if (memento) {
+    cache.fromMemento(memento);
+  } else {
+    const initialCoins = 1 +
+      Math.floor(luck([i, j, "initialValue"].toString()) * 3);
+    for (let serial = 0; serial < initialCoins; serial++) {
+      const coin: Coin = {
+        cell: cell,
+        serial: serial,
+        toString() {
+          return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+        },
+      };
+      cache.coins.push(coin);
+    }
+  }
+
+  (cacheMarker as leaflet.Marker & { cache: Cache }).cache = cache;
+
+  cacheMarker.bindPopup(() => {
     console.log(
-      "Player inventory changed:",
-      playerInventory.map(formatCoinIdentity).join(", "),
+      `Cache [${cell.i},${cell.j}] contains coins: ${
+        cache.coins.map((c) => c.toString()).join(", ")
+      }`,
     );
+    const popupDiv = createPopupDiv(cache, cell);
+    return popupDiv;
   });
 
-  globalThis.addEventListener("player-moved", () => {
-    console.log("Player moved.");
+  return cache;
+}
+
+function createPopupDiv(cache: Cache, cell: Cell): HTMLElement {
+  const popupDiv = document.createElement("div");
+
+  const cacheTitle = document.createElement("div");
+  cacheTitle.innerHTML = `<b>Cache [${cell.i},${cell.j}]</b>`;
+  popupDiv.appendChild(cacheTitle);
+
+  const coinSection = document.createElement("div");
+  coinSection.innerHTML = `<b>Coins:</b>`;
+  cache.coins.forEach((coin) => appendCoinDiv(coinSection, coin, cache));
+  popupDiv.appendChild(coinSection);
+
+  const depositSection = document.createElement("div");
+  const depositTitle = document.createElement("div");
+  depositTitle.innerHTML = `<b>Deposit:</b>`;
+  depositSection.appendChild(depositTitle);
+
+  const selectElement = document.createElement("select");
+  playerCoins.forEach((coin, index) => {
+    const option = document.createElement("option");
+    option.value = index.toString();
+    option.textContent = coin.toString();
+    selectElement.appendChild(option);
   });
-});
+
+  const depositButton = document.createElement("button");
+  depositButton.textContent = "Deposit Selected Coin";
+  depositButton.onclick = () => {
+    if (selectElement.selectedIndex >= 0) {
+      const selectedCoin =
+        playerCoins.splice(selectElement.selectedIndex, 1)[0];
+      deposit(selectedCoin, cache);
+      updatePopup(popupDiv, cache, cell);
+      cacheMementos.set(`${cell.i},${cell.j}`, cache.toMemento());
+    }
+  };
+
+  depositSection.appendChild(selectElement);
+  depositSection.appendChild(depositButton);
+  popupDiv.appendChild(depositSection);
+
+  return popupDiv;
+}
+
+function appendCoinDiv(parent: HTMLElement, coin: Coin, cache: Cache) {
+  const coinDiv = document.createElement("div");
+  const coinText = document.createTextNode(`${coin.toString()} `);
+  const collectButton = document.createElement("button");
+  collectButton.textContent = "Collect";
+  collectButton.onclick = () => {
+    collect(coin, cache);
+    updatePopup(parent, cache, coin.cell);
+    cacheMementos.set(`${coin.cell.i},${coin.cell.j}`, cache.toMemento());
+  };
+
+  coinDiv.appendChild(coinText);
+  coinDiv.appendChild(collectButton);
+  parent.appendChild(coinDiv);
+}
+
+function updatePopup(popupDiv: HTMLElement, cache: Cache, cell: Cell) {
+  popupDiv.innerHTML = "";
+
+  const cacheTitle = document.createElement("div");
+  cacheTitle.innerHTML = `<b>Cache [${cell.i},${cell.j}]</b>`;
+  popupDiv.appendChild(cacheTitle);
+
+  const coinSection = document.createElement("div");
+  coinSection.innerHTML = `<b>Coins:</b>`;
+  cache.coins.forEach((coin) => appendCoinDiv(coinSection, coin, cache));
+  popupDiv.appendChild(coinSection);
+
+  const depositSection = document.createElement("div");
+  const depositTitle = document.createElement("div");
+  depositTitle.innerHTML = `<b>Deposit:</b>`;
+  depositSection.appendChild(depositTitle);
+
+  const selectElement = document.createElement("select");
+  playerCoins.forEach((coin, index) => {
+    const option = document.createElement("option");
+    option.value = index.toString();
+    option.textContent = coin.toString();
+    selectElement.appendChild(option);
+  });
+
+  const depositButton = document.createElement("button");
+  depositButton.textContent = "Deposit Selected Coin";
+  depositButton.onclick = () => {
+    if (selectElement.selectedIndex >= 0) {
+      const selectedCoin =
+        playerCoins.splice(selectElement.selectedIndex, 1)[0];
+      deposit(selectedCoin, cache);
+      updatePopup(popupDiv, cache, cell);
+      cacheMementos.set(`${cell.i},${cell.j}`, cache.toMemento());
+    }
+  };
+
+  depositSection.appendChild(selectElement);
+  depositSection.appendChild(depositButton);
+  popupDiv.appendChild(depositSection);
+}
