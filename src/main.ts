@@ -1,9 +1,7 @@
-// @deno-types="npm:@types/leaflet@^1.9.14"
-import leaflet, { LatLng } from "leaflet";
+import leaflet, { LatLng, Layer } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 import "./leafletWorkaround.ts";
-
 import luck from "./luck.ts";
 
 class CellFactory {
@@ -85,6 +83,8 @@ interface Coin {
   toString(): string;
 }
 
+const cacheMarkers: Map<string, leaflet.Marker> = new Map();
+
 const app: HTMLDivElement = document.querySelector("#app")!;
 
 const controlButtons: ControlButton[] = [
@@ -158,7 +158,7 @@ function movePlayer(direction: Int16Array) {
 }
 
 function clearCaches() {
-  map.eachLayer((layer) => {
+  map.eachLayer((layer: Layer) => {
     if (layer instanceof leaflet.Marker) {
       const markerLayer = layer as leaflet.Marker & { cache?: Cache };
       if (markerLayer.cache) {
@@ -198,13 +198,13 @@ function saveGameData() {
   }));
   gameData.cacheStates = {};
 
-  map.eachLayer((layer) => {
+  map.eachLayer((layer: Layer) => {
     if (layer instanceof leaflet.Marker) {
       const markerLayer = layer as leaflet.Marker & { cache?: Cache };
       if (markerLayer.cache) {
         const cache = markerLayer.cache;
         gameData.cacheStates[cache.positionToString()] = {
-          coins: cache.coins.map((coin): { cell: Cell; serial: number } => ({
+          coins: cache.coins.map((coin: Coin) => ({
             cell: coin.cell,
             serial: coin.serial,
           })),
@@ -216,18 +216,20 @@ function saveGameData() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Add a keydown event listener to the document to catch key presses
   document.addEventListener("keydown", (event) => {
-    // Check if the 's' key is pressed (case insensitive)
     if (event.key === "s" || event.key === "S") {
       saveGameData();
-      console.log("Game data saved.");
     }
 
-    // Check if the 'l' key is pressed (case insensitive)
     if (event.key === "l" || event.key === "L") {
       loadGameData();
-      console.log("Game data loaded.");
+    }
+
+    if (event.key === "i" || event.key === "I") {
+      console.log(
+        "Current player inventory: ",
+        playerCoins.map((coin) => coin.toString()),
+      );
     }
   });
 });
@@ -273,8 +275,7 @@ function loadGameData() {
           }
         }
       }
-    } catch (error) {
-      console.error("Failed to load game data:", error);
+    } catch {
       initializeDefaultGameState();
     }
   } else {
@@ -283,7 +284,6 @@ function loadGameData() {
 }
 
 function initializeDefaultGameState() {
-  // Set default player position
   gameData.playerPosition = {
     lat: OAKES_CLASSROOM.lat,
     lng: OAKES_CLASSROOM.lng,
@@ -291,74 +291,40 @@ function initializeDefaultGameState() {
   playerMarker.setLatLng(gameData.playerPosition);
   map.setView(gameData.playerPosition, GAMEPLAY_ZOOM_LEVEL);
 
-  // Clear collected coins
   playerCoins = [];
   gameData.collectedCoins = [];
 
-  // Reset cache states
   gameData.cacheStates = {};
 
-  // If caches should be initialized, spawn or clear them
   clearCaches();
   spawnNearbyCaches(OAKES_CLASSROOM);
 
-  // Update UI elements if necessary
-  // E.g. statusPanel.innerHTML = "No coins yet...";
+  statusPanel.innerHTML = "No coins yet...";
 }
 
-function collect(coin: Coin, cache: Cache): void {
-  const coinIndex = cache.coins.findIndex((c) => c.serial === coin.serial);
-  if (coinIndex >= 0) {
-    playerCoins.push(coin);
-    cache.coins.splice(coinIndex, 1);
-    cacheMementos.set(cache.positionToString(), cache.toMemento());
-    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
-    console.log(`Collected coin: ${coin.toString()}`);
+function updatePlayerPositionFromGeolocation() {
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        const playerLatLng = leaflet.latLng(latitude, longitude);
+        playerMarker.setLatLng(playerLatLng);
+        map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+        clearCaches();
+        spawnNearbyCaches(playerLatLng);
+      },
+      (error) => {
+        alert("Geolocation error: " + error.message);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      },
+    );
+  } else {
+    alert("Geolocation is not supported by this browser.");
   }
-}
-
-function deposit(coin: Coin, cache: Cache): void {
-  playerCoins.splice(playerCoins.indexOf(coin), 1);
-  cache.coins.push(coin);
-  cacheMementos.set(cache.positionToString(), cache.toMemento());
-  statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
-  console.log(`Deposited coin: ${coin.toString()}`);
-}
-
-function addControlButtons(buttons: ControlButton[]) {
-  const controlPanel: HTMLDivElement = document.createElement("div");
-  controlPanel.id = "controlPanel";
-
-  buttons.forEach((button) => {
-    const btn = document.createElement("button");
-    btn.id = button.name;
-    btn.title = button.name;
-    btn.textContent = button.text;
-
-    let direction: Int16Array | null = null;
-    switch (button.name) {
-      case "north":
-        direction = new Int16Array([1, 0]);
-        break;
-      case "south":
-        direction = new Int16Array([-1, 0]);
-        break;
-      case "east":
-        direction = new Int16Array([0, 1]);
-        break;
-      case "west":
-        direction = new Int16Array([0, -1]);
-        break;
-    }
-
-    if (direction) {
-      btn.addEventListener("click", () => movePlayer(direction));
-    }
-
-    controlPanel.appendChild(btn);
-  });
-
-  app.appendChild(controlPanel);
 }
 
 function spawnNearbyCaches(center: leaflet.LatLng) {
@@ -409,61 +375,58 @@ function spawnCache(i: number, j: number): Cache {
     }
   }
 
-  (cacheMarker as leaflet.Marker & { cache: Cache }).cache = cache;
+  cacheMarkers.set(positionKey, cacheMarker);
 
-  cacheMarker.bindPopup(() => {
-    console.log(
-      `Cache [${cell.i},${cell.j}] contains coins: ${
-        cache.coins.map((c) => c.toString()).join(", ")
-      }`,
-    );
-    const popupDiv = createPopupDiv(cache, cell);
-    return popupDiv;
-  });
+  cacheMarker.bindPopup(() => createPopupDiv(cache, cell));
 
   return cache;
 }
 
 function createPopupDiv(cache: Cache, cell: Cell): HTMLElement {
-  const popupDiv = document.createElement("div");
+  const popupDivId = `popup-${cache.position.i}-${cache.position.j}`;
+  let popupDiv = document.getElementById(popupDivId) as HTMLElement;
 
-  const cacheTitle = document.createElement("div");
-  cacheTitle.innerHTML = `<b>Cache [${cell.i},${cell.j}]</b>`;
-  popupDiv.appendChild(cacheTitle);
+  if (!popupDiv) {
+    popupDiv = document.createElement("div");
+    popupDiv.id = popupDivId;
 
-  const coinSection = document.createElement("div");
-  coinSection.innerHTML = `<b>Coins:</b>`;
-  cache.coins.forEach((coin) => appendCoinDiv(coinSection, coin, cache));
-  popupDiv.appendChild(coinSection);
+    const cacheTitle = document.createElement("div");
+    cacheTitle.innerHTML = `<b>Cache [${cell.i},${cell.j}]</b>`;
+    popupDiv.appendChild(cacheTitle);
 
-  const depositSection = document.createElement("div");
-  const depositTitle = document.createElement("div");
-  depositTitle.innerHTML = `<b>Deposit:</b>`;
-  depositSection.appendChild(depositTitle);
+    const coinSection = document.createElement("div");
+    coinSection.innerHTML = `<b>Coins:</b>`;
+    cache.coins.forEach((coin) => appendCoinDiv(coinSection, coin, cache));
+    popupDiv.appendChild(coinSection);
 
-  const selectElement = document.createElement("select");
-  playerCoins.forEach((coin, index) => {
-    const option = document.createElement("option");
-    option.value = index.toString();
-    option.textContent = coin.toString();
-    selectElement.appendChild(option);
-  });
+    const depositSection = document.createElement("div");
+    const depositTitle = document.createElement("div");
+    depositTitle.innerHTML = `<b>Deposit:</b>`;
+    depositSection.appendChild(depositTitle);
 
-  const depositButton = document.createElement("button");
-  depositButton.textContent = "Deposit Selected Coin";
-  depositButton.onclick = () => {
-    if (selectElement.selectedIndex >= 0) {
-      const selectedCoin =
-        playerCoins.splice(selectElement.selectedIndex, 1)[0];
-      deposit(selectedCoin, cache);
-      updatePopup(popupDiv, cache, cell);
-      cacheMementos.set(`${cell.i},${cell.j}`, cache.toMemento());
-    }
-  };
+    const selectElement = document.createElement("select");
+    playerCoins.forEach((coin, index) => {
+      const option = document.createElement("option");
+      option.value = index.toString();
+      option.textContent = coin.toString();
+      selectElement.appendChild(option);
+    });
 
-  depositSection.appendChild(selectElement);
-  depositSection.appendChild(depositButton);
-  popupDiv.appendChild(depositSection);
+    const depositButton = document.createElement("button");
+    depositButton.textContent = "Deposit Selected Coin";
+    depositButton.onclick = () => {
+      if (selectElement.selectedIndex >= 0) {
+        const selectedCoin = playerCoins[selectElement.selectedIndex];
+        deposit(selectedCoin, cache);
+        updatePopup(popupDiv, cache, cell);
+        cacheMementos.set(`${cell.i},${cell.j}`, cache.toMemento());
+      }
+    };
+
+    depositSection.appendChild(selectElement);
+    depositSection.appendChild(depositButton);
+    popupDiv.appendChild(depositSection);
+  }
 
   return popupDiv;
 }
@@ -513,8 +476,7 @@ function updatePopup(popupDiv: HTMLElement, cache: Cache, cell: Cell) {
   depositButton.textContent = "Deposit Selected Coin";
   depositButton.onclick = () => {
     if (selectElement.selectedIndex >= 0) {
-      const selectedCoin =
-        playerCoins.splice(selectElement.selectedIndex, 1)[0];
+      const selectedCoin = playerCoins[selectElement.selectedIndex];
       deposit(selectedCoin, cache);
       updatePopup(popupDiv, cache, cell);
       cacheMementos.set(`${cell.i},${cell.j}`, cache.toMemento());
@@ -524,4 +486,110 @@ function updatePopup(popupDiv: HTMLElement, cache: Cache, cell: Cell) {
   depositSection.appendChild(selectElement);
   depositSection.appendChild(depositButton);
   popupDiv.appendChild(depositSection);
+}
+
+function collect(coin: Coin, cache: Cache): void {
+  const coinIndex = cache.coins.findIndex((c) =>
+    c.serial === coin.serial && c.cell.i === coin.cell.i &&
+    c.cell.j === coin.cell.j
+  );
+
+  if (coinIndex >= 0) {
+    playerCoins.push(coin);
+    cache.coins.splice(coinIndex, 1);
+    cacheMementos.set(cache.positionToString(), cache.toMemento());
+    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+
+    const popupElement = document.getElementById(
+      `popup-${cache.position.i}-${cache.position.j}`,
+    );
+    if (popupElement) {
+      updatePopup(popupElement, cache, coin.cell);
+    } else {
+      console.warn(
+        "The popup element was not found for cache; attempting to create.",
+      );
+      updatePopup(createPopupDiv(cache, coin.cell), cache, coin.cell);
+    }
+  } else {
+    console.warn(
+      `Coin to be collected wasn't found in the cache: ${coin.toString()}`,
+    );
+  }
+}
+
+function deposit(coin: Coin, cache: Cache): void {
+  const coinIndex = playerCoins.findIndex((c) =>
+    c.serial === coin.serial && c.cell.i === coin.cell.i &&
+    c.cell.j === coin.cell.j
+  );
+  if (coinIndex >= 0) {
+    playerCoins.splice(coinIndex, 1);
+    cache.coins.push(coin);
+    cacheMementos.set(cache.positionToString(), cache.toMemento());
+    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+
+    const marker = cacheMarkers.get(`${cache.position.i},${cache.position.j}`);
+    if (marker && marker.getPopup()) {
+      marker.getPopup().setContent(createPopupDiv(cache, coin.cell)).openOn(
+        map,
+      );
+    }
+  } else {
+    console.warn(
+      `Coin to be deposited wasn't found in player's inventory: ${coin.toString()}`,
+    );
+  }
+}
+
+function addControlButtons(buttons: ControlButton[]) {
+  const controlPanel = document.createElement("div");
+  controlPanel.id = "controlPanel";
+
+  buttons.forEach((button) => {
+    const btn = document.createElement("button");
+    btn.id = button.name;
+    btn.title = button.name;
+    btn.textContent = button.text;
+
+    btn.addEventListener("click", () => {
+      switch (button.name) {
+        case "reset":
+          if (confirm("Are you sure you want to reset the game state?")) {
+            resetGame();
+          }
+          break;
+
+        case "sensor":
+          updatePlayerPositionFromGeolocation();
+          break;
+
+        case "north":
+          movePlayer(new Int16Array([1, 0]));
+          break;
+
+        case "south":
+          movePlayer(new Int16Array([-1, 0]));
+          break;
+
+        case "east":
+          movePlayer(new Int16Array([0, 1]));
+          break;
+
+        case "west":
+          movePlayer(new Int16Array([0, -1]));
+          break;
+      }
+    });
+
+    controlPanel.appendChild(btn);
+  });
+
+  app.appendChild(controlPanel);
+}
+
+function resetGame() {
+  localStorage.removeItem("gameState");
+  initializeDefaultGameState();
+  alert("Game state reset.");
 }
