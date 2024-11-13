@@ -138,7 +138,7 @@ const playerMarker = leaflet.marker(OAKES_CLASSROOM, { icon: redIcon });
 playerMarker.bindTooltip("You");
 playerMarker.addTo(map);
 
-const playerCoins: Coin[] = [];
+let playerCoins: Coin[] = [];
 statusPanel.innerHTML = "No coins yet...";
 
 const cacheMementos: Map<string, string> = new Map();
@@ -151,6 +151,7 @@ function movePlayer(direction: Int16Array) {
     currentPos.lng + TILE_DEGREES * direction[1],
   );
   playerMarker.setLatLng(newPos);
+  map.setView(newPos, GAMEPLAY_ZOOM_LEVEL);
 
   clearCaches();
   spawnNearbyCaches(newPos);
@@ -167,6 +168,142 @@ function clearCaches() {
       }
     }
   });
+}
+
+interface CacheState {
+  coins: { cell: Cell; serial: number }[];
+}
+
+interface GameData {
+  playerPosition: { lat: number; lng: number };
+  collectedCoins: { cell: Cell; serial: number }[];
+  cacheStates: Record<string, CacheState>;
+}
+
+const gameData: GameData = {
+  playerPosition: { lat: OAKES_CLASSROOM.lat, lng: OAKES_CLASSROOM.lng },
+  collectedCoins: [],
+  cacheStates: {},
+};
+
+function saveGameData() {
+  gameData.playerPosition = {
+    lat: playerMarker.getLatLng().lat,
+    lng: playerMarker.getLatLng().lng,
+  };
+
+  gameData.collectedCoins = playerCoins.map((coin) => ({
+    cell: coin.cell,
+    serial: coin.serial,
+  }));
+  gameData.cacheStates = {};
+
+  map.eachLayer((layer) => {
+    if (layer instanceof leaflet.Marker) {
+      const markerLayer = layer as leaflet.Marker & { cache?: Cache };
+      if (markerLayer.cache) {
+        const cache = markerLayer.cache;
+        gameData.cacheStates[cache.positionToString()] = {
+          coins: cache.coins.map((coin): { cell: Cell; serial: number } => ({
+            cell: coin.cell,
+            serial: coin.serial,
+          })),
+        };
+      }
+    }
+  });
+  localStorage.setItem("gameState", JSON.stringify(gameData));
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Add a keydown event listener to the document to catch key presses
+  document.addEventListener("keydown", (event) => {
+    // Check if the 's' key is pressed (case insensitive)
+    if (event.key === "s" || event.key === "S") {
+      saveGameData();
+      console.log("Game data saved.");
+    }
+
+    // Check if the 'l' key is pressed (case insensitive)
+    if (event.key === "l" || event.key === "L") {
+      loadGameData();
+      console.log("Game data loaded.");
+    }
+  });
+});
+
+function loadGameData() {
+  const storedDataString = localStorage.getItem("gameState");
+  if (storedDataString) {
+    try {
+      const storedData: GameData = JSON.parse(storedDataString);
+
+      if (storedData.playerPosition) {
+        const { lat, lng } = storedData.playerPosition;
+        const playerLatLng = leaflet.latLng(lat, lng);
+        playerMarker.setLatLng(playerLatLng);
+        map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+      }
+
+      if (storedData.collectedCoins) {
+        playerCoins = storedData.collectedCoins.map((coinData): Coin => ({
+          cell: coinData.cell,
+          serial: coinData.serial,
+          toString() {
+            return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+          },
+        }));
+      }
+
+      if (storedData.cacheStates) {
+        for (const key in storedData.cacheStates) {
+          if (
+            Object.prototype.hasOwnProperty.call(storedData.cacheStates, key)
+          ) {
+            const cacheData = storedData.cacheStates[key];
+            const [i, j] = key.split(",").map(Number);
+            const cache = spawnCache(i, j);
+            cache.coins = cacheData.coins.map((coinData): Coin => ({
+              cell: coinData.cell,
+              serial: coinData.serial,
+              toString() {
+                return `${this.cell.i}:${this.cell.j}#${this.serial}`;
+              },
+            }));
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load game data:", error);
+      initializeDefaultGameState();
+    }
+  } else {
+    initializeDefaultGameState();
+  }
+}
+
+function initializeDefaultGameState() {
+  // Set default player position
+  gameData.playerPosition = {
+    lat: OAKES_CLASSROOM.lat,
+    lng: OAKES_CLASSROOM.lng,
+  };
+  playerMarker.setLatLng(gameData.playerPosition);
+  map.setView(gameData.playerPosition, GAMEPLAY_ZOOM_LEVEL);
+
+  // Clear collected coins
+  playerCoins = [];
+  gameData.collectedCoins = [];
+
+  // Reset cache states
+  gameData.cacheStates = {};
+
+  // If caches should be initialized, spawn or clear them
+  clearCaches();
+  spawnNearbyCaches(OAKES_CLASSROOM);
+
+  // Update UI elements if necessary
+  // E.g. statusPanel.innerHTML = "No coins yet...";
 }
 
 function collect(coin: Coin, cache: Cache): void {
