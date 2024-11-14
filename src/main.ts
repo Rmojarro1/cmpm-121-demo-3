@@ -144,6 +144,11 @@ statusPanel.innerHTML = "No coins yet...";
 const cacheMementos: Map<string, string> = new Map();
 spawnNearbyCaches(OAKES_CLASSROOM);
 
+const polyCoordinates = [[OAKES_CLASSROOM.lat, OAKES_CLASSROOM.lng]];
+const polyLine = leaflet.polyline(polyCoordinates, { color: "blue" }).addTo(
+  map,
+);
+
 function movePlayer(direction: Int16Array) {
   const currentPos: leaflet.LatLng = playerMarker.getLatLng();
   const newPos: LatLng = leaflet.latLng(
@@ -151,6 +156,7 @@ function movePlayer(direction: Int16Array) {
     currentPos.lng + TILE_DEGREES * direction[1],
   );
   playerMarker.setLatLng(newPos);
+  polyLine.setLatLngs([...polyLine.getLatLngs(), newPos]);
   map.setView(newPos, GAMEPLAY_ZOOM_LEVEL);
 
   clearCaches();
@@ -245,6 +251,8 @@ function loadGameData() {
         const playerLatLng = leaflet.latLng(lat, lng);
         playerMarker.setLatLng(playerLatLng);
         map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+        polyLine.setLatLngs([]);
+        polyLine.setLatLngs([[lat, lng]]);
       }
 
       if (storedData.collectedCoins) {
