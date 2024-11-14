@@ -161,6 +161,7 @@ function movePlayer(direction: Int16Array) {
 
   clearCaches();
   spawnNearbyCaches(newPos);
+  saveGameData();
 }
 
 function clearCaches() {
@@ -292,6 +293,7 @@ function loadGameData() {
 }
 
 function initializeDefaultGameState() {
+  console.log("Initializing default game state.");
   gameData.playerPosition = {
     lat: OAKES_CLASSROOM.lat,
     lng: OAKES_CLASSROOM.lng,
@@ -507,6 +509,7 @@ function collect(coin: Coin, cache: Cache): void {
     cache.coins.splice(coinIndex, 1);
     cacheMementos.set(cache.positionToString(), cache.toMemento());
     updateCoinStatus();
+    saveGameData();
 
     const popupElement = document.getElementById(
       `popup-${cache.position.i}-${cache.position.j}`,
@@ -515,7 +518,7 @@ function collect(coin: Coin, cache: Cache): void {
       updatePopup(popupElement, cache, coin.cell);
     } else {
       console.warn(
-        "The popup element was not found for cache; attempting to create.",
+        "The popup element was not found for cache;attempting to create.",
       );
       updatePopup(createPopupDiv(cache, coin.cell), cache, coin.cell);
     }
@@ -536,6 +539,7 @@ function deposit(coin: Coin, cache: Cache): void {
     cache.coins.push(coin);
     cacheMementos.set(cache.positionToString(), cache.toMemento());
     updateCoinStatus();
+    saveGameData();
 
     const marker = cacheMarkers.get(`${cache.position.i},${cache.position.j}`);
     if (marker && marker.getPopup()) {
@@ -636,3 +640,7 @@ function resetGame() {
   initializeDefaultGameState();
   alert("Game state reset.");
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadGameData();
+});
