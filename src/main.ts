@@ -292,6 +292,7 @@ function loadGameData() {
 }
 
 function initializeDefaultGameState() {
+  console.log("Initializing default game state.");
   gameData.playerPosition = {
     lat: OAKES_CLASSROOM.lat,
     lng: OAKES_CLASSROOM.lng,
@@ -515,7 +516,7 @@ function collect(coin: Coin, cache: Cache): void {
       updatePopup(popupElement, cache, coin.cell);
     } else {
       console.warn(
-        "The popup element was not found for cache; attempting to create.",
+        "The popup element was not found for cache;attempting to create.",
       );
       updatePopup(createPopupDiv(cache, coin.cell), cache, coin.cell);
     }
