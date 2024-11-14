@@ -139,7 +139,7 @@ playerMarker.bindTooltip("You");
 playerMarker.addTo(map);
 
 let playerCoins: Coin[] = [];
-statusPanel.innerHTML = "No coins yet...";
+statusPanel.innerHTML = "No coins collected";
 
 const cacheMementos: Map<string, string> = new Map();
 spawnNearbyCaches(OAKES_CLASSROOM);
@@ -307,7 +307,7 @@ function initializeDefaultGameState() {
   clearCaches();
   spawnNearbyCaches(OAKES_CLASSROOM);
 
-  statusPanel.innerHTML = "No coins yet...";
+  statusPanel.innerHTML = "No coins collected";
 }
 
 function updatePlayerPositionFromGeolocation() {
@@ -506,7 +506,7 @@ function collect(coin: Coin, cache: Cache): void {
     playerCoins.push(coin);
     cache.coins.splice(coinIndex, 1);
     cacheMementos.set(cache.positionToString(), cache.toMemento());
-    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+    updateCoinStatus();
 
     const popupElement = document.getElementById(
       `popup-${cache.position.i}-${cache.position.j}`,
@@ -535,7 +535,7 @@ function deposit(coin: Coin, cache: Cache): void {
     playerCoins.splice(coinIndex, 1);
     cache.coins.push(coin);
     cacheMementos.set(cache.positionToString(), cache.toMemento());
-    statusPanel.innerHTML = `${playerCoins.length} coins accumulated`;
+    updateCoinStatus();
 
     const marker = cacheMarkers.get(`${cache.position.i},${cache.position.j}`);
     if (marker && marker.getPopup()) {
@@ -548,6 +548,41 @@ function deposit(coin: Coin, cache: Cache): void {
       `Coin to be deposited wasn't found in player's inventory: ${coin.toString()}`,
     );
   }
+}
+
+function focusOnCache(cell: Cell) {
+  const cachePosition = leaflet.latLng(
+    cell.i * TILE_DEGREES,
+    cell.j * TILE_DEGREES,
+  );
+  clearCaches();
+  spawnCache(cell.i, cell.j);
+  map.setView(cachePosition, GAMEPLAY_ZOOM_LEVEL);
+  console.log(`Focusing on cache at [${cell.i}, ${cell.j}]`);
+
+  const marker = cacheMarkers.get(`${cell.i},${cell.j}`);
+  if (marker) {
+    marker.openPopup();
+  }
+}
+
+function updateCoinStatus() {
+  let coinDetails = "<h3>Collected Coins</h3><ul>";
+  playerCoins.forEach((coin, index) => {
+    coinDetails += `<li>Coin: ${coin.cell.i}:${coin.cell.j} #${coin.serial}`;
+    coinDetails += ` <button id="home-cache-${index}">Home Cache</button></li>`;
+  });
+  coinDetails += "</ul>";
+  statusPanel.innerHTML = coinDetails;
+
+  playerCoins.forEach((coin, index) => {
+    document.getElementById(`home-cache-${index}`)?.addEventListener(
+      "click",
+      () => {
+        focusOnCache(coin.cell);
+      },
+    );
+  });
 }
 
 function addControlButtons(buttons: ControlButton[]) {
